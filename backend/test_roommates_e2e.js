@@ -1,5 +1,13 @@
 const http = require('http');
 const db = require('./config/db');
+const User = require('./models/User');
+const Room = require('./models/Room');
+const RoomMember = require('./models/RoomMember');
+const SharedExpense = require('./models/SharedExpense');
+const ExpenseSplit = require('./models/ExpenseSplit');
+const Settlement = require('./models/Settlement');
+const SharedBudget = require('./models/SharedBudget');
+const Notification = require('./models/Notification');
 
 async function runRoommateE2ETests() {
     console.log('==================================================');
@@ -56,8 +64,27 @@ async function runRoommateE2ETests() {
         });
     };
 
+    const cleanup = async () => {
+        const testUsers = await User.find({ email: { $in: ['rm1@example.com', 'rm2@example.com'] } });
+        const userIds = testUsers.map(u => u._id);
+        if (userIds.length > 0) {
+            const rooms = await Room.find({ created_by: { $in: userIds } });
+            const roomIds = rooms.map(r => r._id);
+            if (roomIds.length > 0) {
+                await SharedExpense.deleteMany({ room_id: { $in: roomIds } });
+                await ExpenseSplit.deleteMany({});
+                await Settlement.deleteMany({ room_id: { $in: roomIds } });
+                await SharedBudget.deleteMany({ room_id: { $in: roomIds } });
+                await Notification.deleteMany({ room_id: { $in: roomIds } });
+                await RoomMember.deleteMany({ room_id: { $in: roomIds } });
+                await Room.deleteMany({ _id: { $in: roomIds } });
+            }
+            await User.deleteMany({ _id: { $in: userIds } });
+        }
+    };
+
     try {
-        await db.query("DELETE FROM users WHERE email IN ('rm1@example.com', 'rm2@example.com')");
+        await cleanup();
 
         // TEST 1: Register User 1 & User 2
         console.log('[2/9] Registering 2 test roommate users...');
@@ -203,7 +230,7 @@ async function runRoommateE2ETests() {
         console.error('❌ Roommate E2E Test Failed:', err);
         process.exitCode = 1;
     } finally {
-        await db.query("DELETE FROM users WHERE email IN ('rm1@example.com', 'rm2@example.com')");
+        await cleanup();
         server.close();
     }
 }

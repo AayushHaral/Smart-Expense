@@ -349,7 +349,7 @@ export const Roommates = () => {
     }, {})
   );
 
-  const currentRoom = rooms.find(r => r.id === parseInt(selectedRoomId, 10)) || roomDetails?.room;
+  const currentRoom = rooms.find(r => String(r.id) === String(selectedRoomId)) || roomDetails?.room;
   const myBalanceObj = balancesData?.memberBalances?.find(m => m.user_id === user?.id);
 
   return (

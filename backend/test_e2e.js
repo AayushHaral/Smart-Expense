@@ -1,5 +1,8 @@
 const http = require('http');
 const db = require('./config/db');
+const User = require('./models/User');
+const Transaction = require('./models/Transaction');
+const Budget = require('./models/Budget');
 
 async function runE2ETests() {
     console.log('==================================================');
@@ -63,8 +66,18 @@ async function runE2ETests() {
         });
     };
 
+    const cleanup = async () => {
+        const testUsers = await User.find({ email: { $in: ['testuser1@example.com', 'testuser2@example.com'] } });
+        const userIds = testUsers.map(u => u._id);
+        if (userIds.length > 0) {
+            await Transaction.deleteMany({ user_id: { $in: userIds } });
+            await Budget.deleteMany({ user_id: { $in: userIds } });
+            await User.deleteMany({ _id: { $in: userIds } });
+        }
+    };
+
     try {
-        await db.query("DELETE FROM users WHERE email IN ('testuser1@example.com', 'testuser2@example.com')");
+        await cleanup();
 
         // TEST 1: Register User 1
         console.log('[2/10] Testing User Registration (POST /api/auth/register)...');
@@ -179,7 +192,7 @@ async function runE2ETests() {
         console.log('✓ Profile name updated successfully.');
 
         // Clean up test data
-        await db.query("DELETE FROM users WHERE email IN ('testuser1@example.com', 'testuser2@example.com')");
+        await cleanup();
         server.close();
 
         console.log('\n==================================================');
@@ -188,6 +201,7 @@ async function runE2ETests() {
         process.exit(0);
     } catch (err) {
         console.error('\n❌ E2E TEST FAILED:', err.stack || err.message);
+        await cleanup();
         server.close();
         process.exit(1);
     }

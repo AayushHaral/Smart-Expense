@@ -1,31 +1,41 @@
-const db = require('../config/db');
+const Budget = require('../models/Budget');
+const Transaction = require('../models/Transaction');
+const mongoose = require('mongoose');
 
 // GET /api/budgets
 exports.getBudgets = async (req, res, next) => {
     try {
         const userId = req.user.id;
         const period = req.query.period || 'monthly';
-        const month = req.query.month || new Date().toISOString().substring(0, 7); // YYYY-MM or YYYY-Www
+        const month = req.query.month || new Date().toISOString().substring(0, 7);
 
         // Fetch defined budgets for this user, month, and period
-        const budgets = await db.query(
-            'SELECT * FROM budgets WHERE user_id = ? AND month = ? AND period = ? ORDER BY category ASC',
-            [userId, month, period]
-        );
+        const budgets = await Budget.find({
+            user_id: userId,
+            month,
+            period
+        }).sort({ category: 1 });
 
         // Fetch actual expenses per category for this month
-        const actualExpenses = await db.query(
-            `SELECT category, SUM(amount) as spent
-             FROM transactions
-             WHERE user_id = ? AND type = 'expense' 
-               AND DATE_FORMAT(transaction_date, '%Y-%m') = ?
-             GROUP BY category`,
-            [userId, month]
-        );
+        const actualExpenses = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: new mongoose.Types.ObjectId(userId),
+                    type: 'expense',
+                    transaction_date: { $regex: `^${month}` }
+                }
+            },
+            {
+                $group: {
+                    _id: "$category",
+                    spent: { $sum: "$amount" }
+                }
+            }
+        ]);
 
         const spentMap = {};
         actualExpenses.forEach(item => {
-            spentMap[item.category] = parseFloat(item.spent || 0);
+            spentMap[item._id] = parseFloat(item.spent || 0);
         });
 
         const budgetList = budgets.map(b => {
@@ -76,38 +86,58 @@ exports.getBudgetHistory = async (req, res, next) => {
         const userId = req.user.id;
         const period = req.query.period || 'monthly';
 
-        // Query past 6 months of budget totals vs actual spending
-        const historyData = await db.query(
-            `SELECT 
-                b.month,
-                SUM(b.amount) as planned_budget,
-                (
-                    SELECT SUM(t.amount) 
-                    FROM transactions t 
-                    WHERE t.user_id = b.user_id 
-                      AND t.type = 'expense' 
-                      AND DATE_FORMAT(t.transaction_date, '%Y-%m') = b.month
-                ) as actual_spent
-             FROM budgets b
-             WHERE b.user_id = ? AND b.period = ?
-             GROUP BY b.month
-             ORDER BY b.month DESC
-             LIMIT 6`,
-            [userId, period]
-        );
+        // Get unique months from budgets for this user
+        const budgetMonths = await Budget.aggregate([
+            {
+                $match: {
+                    user_id: new mongoose.Types.ObjectId(userId),
+                    period
+                }
+            },
+            {
+                $group: {
+                    _id: "$month",
+                    planned_budget: { $sum: "$amount" }
+                }
+            },
+            { $sort: { _id: -1 } },
+            { $limit: 6 }
+        ]);
+
+        const historyList = [];
+        for (const bm of budgetMonths) {
+            const monthStr = bm._id;
+            const planned = parseFloat(bm.planned_budget || 0);
+
+            const spentAgg = await Transaction.aggregate([
+                {
+                    $match: {
+                        user_id: new mongoose.Types.ObjectId(userId),
+                        type: 'expense',
+                        transaction_date: { $regex: `^${monthStr}` }
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        actual_spent: { $sum: "$amount" }
+                    }
+                }
+            ]);
+
+            const actual = spentAgg.length > 0 ? parseFloat(spentAgg[0].actual_spent) : 0;
+
+            historyList.push({
+                month: monthStr,
+                planned,
+                actual,
+                variance: planned - actual
+            });
+        }
 
         return res.json({
             success: true,
-            history: historyData.map(h => {
-                const planned = parseFloat(h.planned_budget || 0);
-                const actual = parseFloat(h.actual_spent || 0);
-                return {
-                    month: h.month,
-                    planned,
-                    actual,
-                    variance: planned - actual
-                };
-            })
+            history: historyList
         });
     } catch (error) {
         next(error);
@@ -131,22 +161,16 @@ exports.createOrUpdateBudget = async (req, res, next) => {
 
         const targetMonth = month || new Date().toISOString().substring(0, 7);
 
-        await db.query(
-            `INSERT INTO budgets (user_id, category, amount, month, period)
-             VALUES (?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE amount = VALUES(amount), updated_at = CURRENT_TIMESTAMP`,
-            [userId, category, numericAmount, targetMonth, period]
-        );
-
-        const result = await db.query(
-            'SELECT * FROM budgets WHERE user_id = ? AND category = ? AND month = ? AND period = ?',
-            [userId, category, targetMonth, period]
+        const updatedBudget = await Budget.findOneAndUpdate(
+            { user_id: userId, category, month: targetMonth, period },
+            { amount: numericAmount },
+            { upsert: true, new: true, runValidators: true }
         );
 
         return res.status(201).json({
             success: true,
             message: 'Budget saved successfully.',
-            data: result[0]
+            data: updatedBudget.toJSON()
         });
     } catch (error) {
         next(error);
@@ -165,31 +189,27 @@ exports.updateBudget = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'Amount must be greater than 0.' });
         }
 
-        const existing = await db.query(
-            'SELECT id FROM budgets WHERE id = ? AND user_id = ?',
-            [budgetId, userId]
-        );
-
-        if (existing.length === 0) {
+        if (!mongoose.Types.ObjectId.isValid(budgetId)) {
             return res.status(404).json({ success: false, message: 'Budget not found or unauthorized.' });
         }
 
-        await db.query(
-            `UPDATE budgets
-             SET amount = ?,
-                 category = COALESCE(?, category),
-                 month = COALESCE(?, month),
-                 period = COALESCE(?, period)
-             WHERE id = ? AND user_id = ?`,
-            [numericAmount, category, month, period, budgetId, userId]
-        );
+        const existing = await Budget.findOne({ _id: budgetId, user_id: userId });
 
-        const updated = await db.query('SELECT * FROM budgets WHERE id = ?', [budgetId]);
+        if (!existing) {
+            return res.status(404).json({ success: false, message: 'Budget not found or unauthorized.' });
+        }
+
+        existing.amount = numericAmount;
+        if (category) existing.category = category;
+        if (month) existing.month = month;
+        if (period) existing.period = period;
+
+        await existing.save();
 
         return res.json({
             success: true,
             message: 'Budget updated successfully.',
-            data: updated[0]
+            data: existing.toJSON()
         });
     } catch (error) {
         next(error);
@@ -202,12 +222,13 @@ exports.deleteBudget = async (req, res, next) => {
         const userId = req.user.id;
         const budgetId = req.params.id;
 
-        const result = await db.query(
-            'DELETE FROM budgets WHERE id = ? AND user_id = ?',
-            [budgetId, userId]
-        );
+        if (!mongoose.Types.ObjectId.isValid(budgetId)) {
+            return res.status(404).json({ success: false, message: 'Budget not found or unauthorized.' });
+        }
 
-        if (result.affectedRows === 0) {
+        const deleted = await Budget.findOneAndDelete({ _id: budgetId, user_id: userId });
+
+        if (!deleted) {
             return res.status(404).json({ success: false, message: 'Budget not found or unauthorized.' });
         }
 

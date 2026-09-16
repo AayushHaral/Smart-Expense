@@ -1,4 +1,5 @@
-const db = require('../config/db');
+const Transaction = require('../models/Transaction');
+const mongoose = require('mongoose');
 
 // GET /api/transactions
 exports.getTransactions = async (req, res, next) => {
@@ -18,81 +19,62 @@ exports.getTransactions = async (req, res, next) => {
             limit = 20
         } = req.query;
 
-        let query = 'SELECT * FROM transactions WHERE user_id = ?';
-        let countQuery = 'SELECT COUNT(*) as total FROM transactions WHERE user_id = ?';
-        const params = [userId];
-        const countParams = [userId];
+        const filter = { user_id: new mongoose.Types.ObjectId(userId) };
 
         if (type && type !== 'all') {
-            query += ' AND type = ?';
-            countQuery += ' AND type = ?';
-            params.push(type);
-            countParams.push(type);
+            filter.type = type;
         }
 
         if (category && category !== 'all') {
-            query += ' AND category = ?';
-            countQuery += ' AND category = ?';
-            params.push(category);
-            countParams.push(category);
+            filter.category = category;
         }
 
         if (subcategory && subcategory !== 'all') {
-            query += ' AND subcategory = ?';
-            countQuery += ' AND subcategory = ?';
-            params.push(subcategory);
-            countParams.push(subcategory);
+            filter.subcategory = subcategory;
         }
 
-        if (is_recurring === 'true' || is_recurring === '1') {
-            query += ' AND is_recurring = TRUE';
-            countQuery += ' AND is_recurring = TRUE';
+        if (is_recurring === 'true' || is_recurring === '1' || is_recurring === true) {
+            filter.is_recurring = true;
         }
 
-        if (startDate) {
-            query += ' AND transaction_date >= ?';
-            countQuery += ' AND transaction_date >= ?';
-            params.push(startDate);
-            countParams.push(startDate);
-        }
-
-        if (endDate) {
-            query += ' AND transaction_date <= ?';
-            countQuery += ' AND transaction_date <= ?';
-            params.push(endDate);
-            countParams.push(endDate);
+        if (startDate || endDate) {
+            filter.transaction_date = {};
+            if (startDate) filter.transaction_date.$gte = startDate;
+            if (endDate) filter.transaction_date.$lte = endDate;
         }
 
         if (search && search.trim() !== '') {
-            const searchPattern = `%${search.trim()}%`;
-            query += ' AND (description LIKE ? OR category LIKE ? OR subcategory LIKE ? OR payment_method LIKE ?)';
-            countQuery += ' AND (description LIKE ? OR category LIKE ? OR subcategory LIKE ? OR payment_method LIKE ?)';
-            params.push(searchPattern, searchPattern, searchPattern, searchPattern);
-            countParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
+            const searchRegex = new RegExp(search.trim(), 'i');
+            filter.$or = [
+                { description: searchRegex },
+                { category: searchRegex },
+                { subcategory: searchRegex },
+                { payment_method: searchRegex }
+            ];
         }
 
         // Sorting
         const allowedSortFields = ['transaction_date', 'amount', 'category', 'created_at'];
         const safeSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'transaction_date';
-        const safeSortOrder = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+        const sortDirection = sortOrder.toUpperCase() === 'ASC' ? 1 : -1;
 
-        query += ` ORDER BY ${safeSortBy} ${safeSortOrder}, id DESC`;
+        const sortObj = {};
+        sortObj[safeSortBy] = sortDirection;
+        sortObj._id = -1;
 
         // Pagination
         const pageNum = Math.max(1, parseInt(page, 10) || 1);
         const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
-        const offset = (pageNum - 1) * limitNum;
+        const skip = (pageNum - 1) * limitNum;
 
-        query += ' LIMIT ? OFFSET ?';
-        params.push(limitNum, offset);
-
-        const transactions = await db.query(query, params);
-        const countResult = await db.query(countQuery, countParams);
-        const total = countResult[0].total;
+        const [transactions, total] = await Promise.all([
+            Transaction.find(filter).sort(sortObj).skip(skip).limit(limitNum),
+            Transaction.countDocuments(filter)
+        ]);
 
         return res.json({
             success: true,
-            data: transactions,
+            data: transactions.map(t => t.toJSON()),
             pagination: {
                 total,
                 page: pageNum,
@@ -113,22 +95,18 @@ exports.getCalendarTransactions = async (req, res, next) => {
 
         // If specific date requested, return list of transactions
         if (date) {
-            const dailyTransactions = await db.query(
-                'SELECT * FROM transactions WHERE user_id = ? AND transaction_date = ? ORDER BY id DESC',
-                [userId, date]
-            );
+            const dailyTransactions = await Transaction.find({
+                user_id: userId,
+                transaction_date: date
+            }).sort({ _id: -1 });
 
-            const totals = await db.query(
-                `SELECT 
-                    SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as total_income,
-                    SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as total_expense
-                 FROM transactions 
-                 WHERE user_id = ? AND transaction_date = ?`,
-                [userId, date]
-            );
+            let income = 0;
+            let expense = 0;
 
-            const income = parseFloat(totals[0].total_income || 0);
-            const expense = parseFloat(totals[0].total_expense || 0);
+            dailyTransactions.forEach(tx => {
+                if (tx.type === 'income') income += tx.amount;
+                if (tx.type === 'expense') expense += tx.amount;
+            });
 
             return res.json({
                 success: true,
@@ -140,30 +118,40 @@ exports.getCalendarTransactions = async (req, res, next) => {
                     netBalance: income - expense,
                     count: dailyTransactions.length
                 },
-                transactions: dailyTransactions
+                transactions: dailyTransactions.map(t => t.toJSON())
             });
         }
 
         // Return month-level day-by-day aggregations
         const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-        const dailyAggregates = await db.query(
-            `SELECT 
-                DATE_FORMAT(transaction_date, '%Y-%m-%d') as date,
-                SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
-                SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense,
-                COUNT(*) as count
-             FROM transactions
-             WHERE user_id = ? AND DATE_FORMAT(transaction_date, '%Y-%m') = ?
-             GROUP BY date
-             ORDER BY date ASC`,
-            [userId, monthStr]
-        );
+        
+        const dailyAggregates = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: new mongoose.Types.ObjectId(userId),
+                    transaction_date: { $regex: `^${monthStr}` }
+                }
+            },
+            {
+                $group: {
+                    _id: "$transaction_date",
+                    income: {
+                        $sum: { $cond: [{ $eq: ["$type", "income"] }, "$amount", 0] }
+                    },
+                    expense: {
+                        $sum: { $cond: [{ $eq: ["$type", "expense"] }, "$amount", 0] }
+                    },
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
 
         const calendarMap = {};
         dailyAggregates.forEach(row => {
-            calendarMap[row.date] = {
-                income: parseFloat(row.income),
-                expense: parseFloat(row.expense),
+            calendarMap[row._id] = {
+                income: row.income,
+                expense: row.expense,
                 count: row.count
             };
         });
@@ -186,31 +174,30 @@ exports.getTransactionById = async (req, res, next) => {
         const userId = req.user.id;
         const transactionId = req.params.id;
 
-        const results = await db.query(
-            'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
-            [transactionId, userId]
-        );
-
-        if (results.length === 0) {
+        if (!mongoose.Types.ObjectId.isValid(transactionId)) {
             return res.status(404).json({
                 success: false,
                 message: 'Transaction not found or unauthorized.'
             });
         }
 
-        const transaction = results[0];
+        const transaction = await Transaction.findOne({ _id: transactionId, user_id: userId });
 
-        // If parent transaction, fetch split items
-        const splitItems = await db.query(
-            'SELECT * FROM transactions WHERE parent_transaction_id = ? AND user_id = ?',
-            [transactionId, userId]
-        );
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                message: 'Transaction not found or unauthorized.'
+            });
+        }
+
+        // Fetch split items if parent
+        const splitItems = await Transaction.find({ parent_transaction_id: transactionId, user_id: userId });
 
         return res.json({
             success: true,
             data: {
-                ...transaction,
-                split_items: splitItems
+                ...transaction.toJSON(),
+                split_items: splitItems.map(s => s.toJSON())
             }
         });
     } catch (error) {
@@ -232,7 +219,7 @@ exports.createTransaction = async (req, res, next) => {
             transaction_date,
             is_recurring,
             recurring_frequency,
-            split_items // Optional array of split items
+            split_items
         } = req.body;
 
         if (!type || !['income', 'expense'].includes(type)) {
@@ -265,37 +252,7 @@ exports.createTransaction = async (req, res, next) => {
         const recFreq = isRec ? (recurring_frequency || 'monthly') : null;
 
         // Insert main parent transaction
-        const result = await db.query(
-            `INSERT INTO transactions 
-             (user_id, type, amount, category, subcategory, payment_method, description, transaction_date, receipt_url, is_recurring, recurring_frequency)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [userId, type, numericAmount, category, subcategory || null, finalPaymentMethod, finalDescription, transaction_date, receipt_url, isRec, recFreq]
-        );
-
-        const parentId = result.insertId;
-
-        // Handle split transaction items if provided
-        let parsedSplitItems = [];
-        if (split_items) {
-            try {
-                parsedSplitItems = typeof split_items === 'string' ? JSON.parse(split_items) : split_items;
-                if (Array.isArray(parsedSplitItems) && parsedSplitItems.length > 0) {
-                    for (const item of parsedSplitItems) {
-                        await db.query(
-                            `INSERT INTO transactions 
-                             (user_id, type, amount, category, subcategory, payment_method, description, transaction_date, parent_transaction_id)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                            [userId, type, parseFloat(item.amount), item.category, item.subcategory || null, finalPaymentMethod, item.description || finalDescription, transaction_date, parentId]
-                        );
-                    }
-                }
-            } catch (e) {
-                console.error('Failed to parse split items:', e);
-            }
-        }
-
-        const newTransaction = {
-            id: parentId,
+        const mainTx = await Transaction.create({
             user_id: userId,
             type,
             amount: numericAmount,
@@ -306,7 +263,36 @@ exports.createTransaction = async (req, res, next) => {
             transaction_date,
             receipt_url,
             is_recurring: isRec,
-            recurring_frequency: recFreq,
+            recurring_frequency: recFreq
+        });
+
+        // Handle split transaction items if provided
+        let parsedSplitItems = [];
+        if (split_items) {
+            try {
+                parsedSplitItems = typeof split_items === 'string' ? JSON.parse(split_items) : split_items;
+                if (Array.isArray(parsedSplitItems) && parsedSplitItems.length > 0) {
+                    for (const item of parsedSplitItems) {
+                        await Transaction.create({
+                            user_id: userId,
+                            type,
+                            amount: parseFloat(item.amount),
+                            category: item.category,
+                            subcategory: item.subcategory || null,
+                            payment_method: finalPaymentMethod,
+                            description: item.description || finalDescription,
+                            transaction_date,
+                            parent_transaction_id: mainTx._id
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to parse split items:', e);
+            }
+        }
+
+        const newTransaction = {
+            ...mainTx.toJSON(),
             split_items: parsedSplitItems
         };
 
@@ -325,6 +311,23 @@ exports.updateTransaction = async (req, res, next) => {
     try {
         const userId = req.user.id;
         const transactionId = req.params.id;
+
+        if (!mongoose.Types.ObjectId.isValid(transactionId)) {
+            return res.status(404).json({
+                success: false,
+                message: 'Transaction not found or unauthorized.'
+            });
+        }
+
+        const existing = await Transaction.findOne({ _id: transactionId, user_id: userId });
+
+        if (!existing) {
+            return res.status(404).json({
+                success: false,
+                message: 'Transaction not found or unauthorized.'
+            });
+        }
+
         const {
             type,
             amount,
@@ -337,49 +340,30 @@ exports.updateTransaction = async (req, res, next) => {
             recurring_frequency
         } = req.body;
 
-        const existing = await db.query(
-            'SELECT id, receipt_url FROM transactions WHERE id = ? AND user_id = ?',
-            [transactionId, userId]
-        );
-
-        if (existing.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Transaction not found or unauthorized.'
-            });
-        }
-
-        let receipt_url = existing[0].receipt_url;
+        let receipt_url = existing.receipt_url;
         if (req.file) {
             receipt_url = `/uploads/receipts/${req.file.filename}`;
         } else if (req.body.receipt_url !== undefined) {
             receipt_url = req.body.receipt_url;
         }
 
-        const isRec = is_recurring !== undefined ? (is_recurring === 'true' || is_recurring === true) : undefined;
+        if (type !== undefined) existing.type = type;
+        if (amount !== undefined) existing.amount = parseFloat(amount);
+        if (category !== undefined) existing.category = category;
+        if (subcategory !== undefined) existing.subcategory = subcategory;
+        if (payment_method !== undefined) existing.payment_method = payment_method;
+        if (description !== undefined) existing.description = description;
+        if (transaction_date !== undefined) existing.transaction_date = transaction_date;
+        existing.receipt_url = receipt_url;
+        if (is_recurring !== undefined) existing.is_recurring = is_recurring === 'true' || is_recurring === true;
+        if (recurring_frequency !== undefined) existing.recurring_frequency = recurring_frequency;
 
-        await db.query(
-            `UPDATE transactions 
-             SET type = COALESCE(?, type),
-                 amount = COALESCE(?, amount),
-                 category = COALESCE(?, category),
-                 subcategory = COALESCE(?, subcategory),
-                 payment_method = COALESCE(?, payment_method),
-                 description = COALESCE(?, description),
-                 transaction_date = COALESCE(?, transaction_date),
-                 receipt_url = ?,
-                 is_recurring = COALESCE(?, is_recurring),
-                 recurring_frequency = COALESCE(?, recurring_frequency)
-             WHERE id = ? AND user_id = ?`,
-            [type, amount, category, subcategory, payment_method, description, transaction_date, receipt_url, isRec, recurring_frequency, transactionId, userId]
-        );
-
-        const updated = await db.query('SELECT * FROM transactions WHERE id = ?', [transactionId]);
+        await existing.save();
 
         return res.json({
             success: true,
             message: 'Transaction updated successfully.',
-            data: updated[0]
+            data: existing.toJSON()
         });
     } catch (error) {
         next(error);
@@ -392,17 +376,24 @@ exports.deleteTransaction = async (req, res, next) => {
         const userId = req.user.id;
         const transactionId = req.params.id;
 
-        const result = await db.query(
-            'DELETE FROM transactions WHERE id = ? AND user_id = ?',
-            [transactionId, userId]
-        );
-
-        if (result.affectedRows === 0) {
+        if (!mongoose.Types.ObjectId.isValid(transactionId)) {
             return res.status(404).json({
                 success: false,
                 message: 'Transaction not found or unauthorized.'
             });
         }
+
+        const deleted = await Transaction.findOneAndDelete({ _id: transactionId, user_id: userId });
+
+        if (!deleted) {
+            return res.status(404).json({
+                success: false,
+                message: 'Transaction not found or unauthorized.'
+            });
+        }
+
+        // Delete any child splits
+        await Transaction.deleteMany({ parent_transaction_id: transactionId, user_id: userId });
 
         return res.json({
             success: true,

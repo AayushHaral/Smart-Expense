@@ -1,22 +1,19 @@
 const bcrypt = require('bcryptjs');
-const db = require('../config/db');
+const User = require('../models/User');
 
 // GET /api/profile
 exports.getProfile = async (req, res, next) => {
     try {
         const userId = req.user.id;
-        const users = await db.query(
-            'SELECT id, full_name, email, created_at, updated_at FROM users WHERE id = ?',
-            [userId]
-        );
+        const user = await User.findById(userId).select('full_name email created_at updated_at');
 
-        if (users.length === 0) {
+        if (!user) {
             return res.status(404).json({ success: false, message: 'User not found.' });
         }
 
         return res.json({
             success: true,
-            data: users[0]
+            data: user.toJSON()
         });
     } catch (error) {
         next(error);
@@ -38,30 +35,25 @@ exports.updateProfile = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
         }
 
-        // Check duplicate email for other users
-        const existingUsers = await db.query(
-            'SELECT id FROM users WHERE email = ? AND id != ?',
-            [email.toLowerCase().trim(), userId]
-        );
+        const cleanEmail = email.toLowerCase().trim();
 
-        if (existingUsers.length > 0) {
+        // Check duplicate email for other users
+        const existingUser = await User.findOne({ email: cleanEmail, _id: { $ne: userId } });
+
+        if (existingUser) {
             return res.status(400).json({ success: false, message: 'Email address is already in use by another account.' });
         }
 
-        await db.query(
-            'UPDATE users SET full_name = ?, email = ? WHERE id = ?',
-            [full_name.trim(), email.toLowerCase().trim(), userId]
-        );
-
-        const updatedUser = await db.query(
-            'SELECT id, full_name, email, created_at, updated_at FROM users WHERE id = ?',
-            [userId]
-        );
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { full_name: full_name.trim(), email: cleanEmail },
+            { new: true, runValidators: true }
+        ).select('full_name email created_at updated_at');
 
         return res.json({
             success: true,
             message: 'Profile updated successfully.',
-            data: updatedUser[0]
+            data: updatedUser.toJSON()
         });
     } catch (error) {
         next(error);
@@ -87,12 +79,12 @@ exports.changePassword = async (req, res, next) => {
         }
 
         // Verify current password
-        const users = await db.query('SELECT password_hash FROM users WHERE id = ?', [userId]);
-        if (users.length === 0) {
+        const user = await User.findById(userId);
+        if (!user) {
             return res.status(404).json({ success: false, message: 'User not found.' });
         }
 
-        const isMatch = await bcrypt.compare(current_password, users[0].password_hash);
+        const isMatch = await bcrypt.compare(current_password, user.password_hash);
         if (!isMatch) {
             return res.status(400).json({ success: false, message: 'Current password is incorrect.' });
         }
@@ -101,7 +93,8 @@ exports.changePassword = async (req, res, next) => {
         const salt = await bcrypt.genSalt(10);
         const newPasswordHash = await bcrypt.hash(new_password, salt);
 
-        await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [newPasswordHash, userId]);
+        user.password_hash = newPasswordHash;
+        await user.save();
 
         return res.json({
             success: true,

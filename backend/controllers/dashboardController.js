@@ -1,4 +1,16 @@
-const db = require('../config/db');
+const Transaction = require('../models/Transaction');
+const Budget = require('../models/Budget');
+const mongoose = require('mongoose');
+
+// Helper to get abbreviated month name (e.g., "Jan", "Sep")
+const getMonthAbbr = (dateObj) => {
+    return dateObj.toLocaleString('en-US', { month: 'short' });
+};
+
+// Helper to get day name (e.g., "Mon", "Tue")
+const getDayAbbr = (dateObj) => {
+    return dateObj.toLocaleString('en-US', { weekday: 'short' });
+};
 
 // GET /api/dashboard/summary
 exports.getDashboardSummary = async (req, res, next) => {
@@ -6,127 +18,240 @@ exports.getDashboardSummary = async (req, res, next) => {
         const userId = req.user.id;
         const now = new Date();
         const todayStr = now.toISOString().split('T')[0];
-        
+
         const currentYear = now.getFullYear();
         const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
         const currentMonthStr = `${currentYear}-${currentMonth}`;
 
-        // 1. Total Income & Total Expenses
-        const totalsResult = await db.query(
-            `SELECT 
-                SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as total_income,
-                SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as total_expense
-             FROM transactions 
-             WHERE user_id = ?`,
-            [userId]
-        );
+        const userObjectId = new mongoose.Types.ObjectId(userId);
 
-        const totalIncome = parseFloat(totalsResult[0].total_income || 0);
-        const totalExpense = parseFloat(totalsResult[0].total_expense || 0);
+        // 1. Total Income & Total Expenses
+        const totalsResult = await Transaction.aggregate([
+            { $match: { user_id: userObjectId } },
+            {
+                $group: {
+                    _id: null,
+                    total_income: {
+                        $sum: { $cond: [{ $eq: ["$type", "income"] }, "$amount", 0] }
+                    },
+                    total_expense: {
+                        $sum: { $cond: [{ $eq: ["$type", "expense"] }, "$amount", 0] }
+                    }
+                }
+            }
+        ]);
+
+        const totalIncome = totalsResult.length > 0 ? parseFloat(totalsResult[0].total_income || 0) : 0;
+        const totalExpense = totalsResult.length > 0 ? parseFloat(totalsResult[0].total_expense || 0) : 0;
         const totalBalance = totalIncome - totalExpense;
         const savings = Math.max(0, totalBalance);
         const savingsRate = totalIncome > 0 ? Math.max(0, Math.round(((totalIncome - totalExpense) / totalIncome) * 1000) / 10) : 0;
 
         // 2. Today's Spending
-        const todayResult = await db.query(
-            `SELECT SUM(amount) as today_spending 
-             FROM transactions 
-             WHERE user_id = ? AND type = 'expense' AND transaction_date = ?`,
-            [userId, todayStr]
-        );
-        const todaySpending = parseFloat(todayResult[0].today_spending || 0);
+        const todayResult = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: userObjectId,
+                    type: 'expense',
+                    transaction_date: todayStr
+                }
+            },
+            {
+                $group: {
+                    _id: null,
+                    today_spending: { $sum: "$amount" }
+                }
+            }
+        ]);
+        const todaySpending = todayResult.length > 0 ? parseFloat(todayResult[0].today_spending || 0) : 0;
 
         // 3. This Week's Spending
-        const startOfWeek = new Date();
+        const startOfWeek = new Date(now);
         startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
         const startOfWeekStr = startOfWeek.toISOString().split('T')[0];
 
-        const weekResult = await db.query(
-            `SELECT SUM(amount) as week_spending 
-             FROM transactions 
-             WHERE user_id = ? AND type = 'expense' AND transaction_date >= ?`,
-            [userId, startOfWeekStr]
-        );
-        const thisWeekSpending = parseFloat(weekResult[0].week_spending || 0);
+        const weekResult = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: userObjectId,
+                    type: 'expense',
+                    transaction_date: { $gte: startOfWeekStr }
+                }
+            },
+            {
+                $group: {
+                    _id: null,
+                    week_spending: { $sum: "$amount" }
+                }
+            }
+        ]);
+        const thisWeekSpending = weekResult.length > 0 ? parseFloat(weekResult[0].week_spending || 0) : 0;
 
         // 4. Current Month Expense
-        const currentMonthExpenseResult = await db.query(
-            `SELECT SUM(amount) as current_month_expense 
-             FROM transactions 
-             WHERE user_id = ? AND type = 'expense' 
-               AND DATE_FORMAT(transaction_date, '%Y-%m') = ?`,
-            [userId, currentMonthStr]
-        );
-        const currentMonthExpense = parseFloat(currentMonthExpenseResult[0].current_month_expense || 0);
+        const currentMonthExpenseResult = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: userObjectId,
+                    type: 'expense',
+                    transaction_date: { $regex: `^${currentMonthStr}` }
+                }
+            },
+            {
+                $group: {
+                    _id: null,
+                    current_month_expense: { $sum: "$amount" }
+                }
+            }
+        ]);
+        const currentMonthExpense = currentMonthExpenseResult.length > 0 ? parseFloat(currentMonthExpenseResult[0].current_month_expense || 0) : 0;
 
         // 5. Current Month Budget & Remaining Budget
-        const budgetResult = await db.query(
-            `SELECT SUM(amount) as total_budget 
-             FROM budgets 
-             WHERE user_id = ? AND month = ? AND period = 'monthly'`,
-            [userId, currentMonthStr]
-        );
-        const monthlyBudget = parseFloat(budgetResult[0].total_budget || 0);
+        const budgetResult = await Budget.aggregate([
+            {
+                $match: {
+                    user_id: userObjectId,
+                    month: currentMonthStr,
+                    period: 'monthly'
+                }
+            },
+            {
+                $group: {
+                    _id: null,
+                    total_budget: { $sum: "$amount" }
+                }
+            }
+        ]);
+        const monthlyBudget = budgetResult.length > 0 ? parseFloat(budgetResult[0].total_budget || 0) : 0;
         const remainingBudget = monthlyBudget - currentMonthExpense;
 
         // 6. Recent 5 Transactions
-        const recentTransactions = await db.query(
-            `SELECT * FROM transactions 
-             WHERE user_id = ? 
-             ORDER BY transaction_date DESC, id DESC 
-             LIMIT 5`,
-            [userId]
-        );
+        const recentTransactionsDocs = await Transaction.find({ user_id: userId })
+            .sort({ transaction_date: -1, _id: -1 })
+            .limit(5);
+        const recentTransactions = recentTransactionsDocs.map(t => t.toJSON());
 
         // 7. Income vs Expense (Last 6 Months)
-        const sixMonthsAgo = new Date();
-        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
-        sixMonthsAgo.setDate(1);
-        const startDateStr = sixMonthsAgo.toISOString().split('T')[0];
+        const monthsList = [];
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const ymCode = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            const monthLabel = `${d.toLocaleString('en-US', { month: 'short' })} ${d.getFullYear()}`;
+            monthsList.push({ ymCode, monthLabel });
+        }
 
-        const monthlyComparison = await db.query(
-            `SELECT 
-                DATE_FORMAT(transaction_date, '%b %Y') as month_label,
-                DATE_FORMAT(transaction_date, '%Y-%m') as ym_code,
-                SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
-                SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
-             FROM transactions
-             WHERE user_id = ? AND transaction_date >= ?
-             GROUP BY DATE_FORMAT(transaction_date, '%Y-%m'), DATE_FORMAT(transaction_date, '%b %Y')
-             ORDER BY DATE_FORMAT(transaction_date, '%Y-%m') ASC`,
-            [userId, startDateStr]
-        );
+        const sixMonthsAgoStr = monthsList[0].ymCode;
+
+        const monthlyComparisonRaw = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: userObjectId,
+                    transaction_date: { $gte: `${sixMonthsAgoStr}-01` }
+                }
+            },
+            {
+                $project: {
+                    ym_code: { $substrCP: ["$transaction_date", 0, 7] },
+                    type: 1,
+                    amount: 1
+                }
+            },
+            {
+                $group: {
+                    _id: "$ym_code",
+                    income: {
+                        $sum: { $cond: [{ $eq: ["$type", "income"] }, "$amount", 0] }
+                    },
+                    expense: {
+                        $sum: { $cond: [{ $eq: ["$type", "expense"] }, "$amount", 0] }
+                    }
+                }
+            }
+        ]);
+
+        const monthlyMap = {};
+        monthlyComparisonRaw.forEach(row => {
+            monthlyMap[row._id] = { income: row.income, expense: row.expense };
+        });
+
+        const monthlyComparison = monthsList.map(m => {
+            const data = monthlyMap[m.ymCode] || { income: 0, expense: 0 };
+            return {
+                ym_code: m.ymCode,
+                month_label: m.monthLabel,
+                income: data.income,
+                expense: data.expense
+            };
+        });
 
         // 8. Expense by Category (Current Month)
-        const categoryExpenses = await db.query(
-            `SELECT 
-                category, 
-                SUM(amount) as total_amount
-             FROM transactions 
-             WHERE user_id = ? AND type = 'expense' 
-               AND DATE_FORMAT(transaction_date, '%Y-%m') = ?
-             GROUP BY category
-             ORDER BY total_amount DESC`,
-            [userId, currentMonthStr]
-        );
+        const categoryExpensesRaw = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: userObjectId,
+                    type: 'expense',
+                    transaction_date: { $regex: `^${currentMonthStr}` }
+                }
+            },
+            {
+                $group: {
+                    _id: "$category",
+                    total_amount: { $sum: "$amount" }
+                }
+            },
+            { $sort: { total_amount: -1 } }
+        ]);
+
+        const categoryExpenses = categoryExpensesRaw.map(c => ({
+            category: c._id,
+            amount: parseFloat(c.total_amount)
+        }));
 
         // 9. Weekly Spending (Last 7 Days)
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-        const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0];
+        const last7Days = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(now);
+            d.setDate(d.getDate() - i);
+            const dateStr = d.toISOString().split('T')[0];
+            const dayAbbr = getDayAbbr(d);
+            last7Days.push({ dateStr, dayAbbr });
+        }
 
-        const weeklySpending = await db.query(
-            `SELECT 
-                DATE_FORMAT(transaction_date, '%a') as day,
-                transaction_date,
-                SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense,
-                SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income
-             FROM transactions
-             WHERE user_id = ? AND transaction_date >= ?
-             GROUP BY transaction_date, DATE_FORMAT(transaction_date, '%a')
-             ORDER BY transaction_date ASC`,
-            [userId, sevenDaysAgoStr]
-        );
+        const sevenDaysAgoStr = last7Days[0].dateStr;
+
+        const weeklySpendingRaw = await Transaction.aggregate([
+            {
+                $match: {
+                    user_id: userObjectId,
+                    transaction_date: { $gte: sevenDaysAgoStr }
+                }
+            },
+            {
+                $group: {
+                    _id: "$transaction_date",
+                    expense: {
+                        $sum: { $cond: [{ $eq: ["$type", "expense"] }, "$amount", 0] }
+                    },
+                    income: {
+                        $sum: { $cond: [{ $eq: ["$type", "income"] }, "$amount", 0] }
+                    }
+                }
+            }
+        ]);
+
+        const weeklyMap = {};
+        weeklySpendingRaw.forEach(r => {
+            weeklyMap[r._id] = { expense: r.expense, income: r.income };
+        });
+
+        const weeklySpending = last7Days.map(item => {
+            const d = weeklyMap[item.dateStr] || { expense: 0, income: 0 };
+            return {
+                day: item.dayAbbr,
+                date: item.dateStr,
+                expense: parseFloat(d.expense),
+                income: parseFloat(d.income)
+            };
+        });
 
         return res.json({
             success: true,
@@ -146,16 +271,8 @@ exports.getDashboardSummary = async (req, res, next) => {
             recentTransactions,
             charts: {
                 monthlyComparison,
-                categoryExpenses: categoryExpenses.map(c => ({
-                    category: c.category,
-                    amount: parseFloat(c.total_amount)
-                })),
-                weeklySpending: weeklySpending.map(w => ({
-                    day: w.day,
-                    date: w.transaction_date,
-                    expense: parseFloat(w.expense),
-                    income: parseFloat(w.income)
-                }))
+                categoryExpenses,
+                weeklySpending
             }
         });
     } catch (error) {

@@ -46,17 +46,25 @@ app.use('/api/rooms', roomRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Smart Expense Tracker REST API v3 with Roommates Module is running' });
+    const dbConnected = db.getDbStatus();
+    res.json({
+        status: 'ok',
+        database: dbConnected ? 'connected' : 'disconnected',
+        message: 'Smart Expense Tracker REST API v3 with Roommates Module is running'
+    });
 });
 
 // Centralized Error Handling Middleware
 app.use(errorHandler);
 
-// Start server after DB initialization promise completes
+// Start server after DB initialization promise settles
 db.initPromise.then(() => {
     app.listen(PORT, () => {
         console.log(`[Smart Expense Server] Running on http://localhost:${PORT}`);
     });
 }).catch(err => {
-    console.error('[Smart Expense Server] Failed to start due to DB init error:', err.message);
+    console.error('[Smart Expense Server] Database init failed, starting server in fallback mode:', err.message);
+    app.listen(PORT, () => {
+        console.log(`[Smart Expense Server] Running on http://localhost:${PORT}`);
+    });
 });

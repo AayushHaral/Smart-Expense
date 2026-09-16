@@ -1,11 +1,12 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = require('../config/db');
+const User = require('../models/User');
 
 // Helper to generate JWT token
 const generateToken = (user) => {
+    const userId = user.id || (user._id ? user._id.toString() : user);
     return jwt.sign(
-        { id: user.id, email: user.email, full_name: user.full_name },
+        { id: userId, email: user.email, full_name: user.full_name },
         process.env.JWT_SECRET || 'secret',
         { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -34,9 +35,11 @@ exports.register = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'Passwords do not match.' });
         }
 
+        const cleanEmail = email.toLowerCase().trim();
+
         // Check duplicate email
-        const existingUsers = await db.query('SELECT id FROM users WHERE email = ?', [email.toLowerCase().trim()]);
-        if (existingUsers.length > 0) {
+        const existingUser = await User.findOne({ email: cleanEmail });
+        if (existingUser) {
             return res.status(400).json({ success: false, message: 'An account with this email already exists.' });
         }
 
@@ -45,15 +48,16 @@ exports.register = async (req, res, next) => {
         const password_hash = await bcrypt.hash(password, salt);
 
         // Insert new user
-        const result = await db.query(
-            'INSERT INTO users (full_name, email, password_hash) VALUES (?, ?, ?)',
-            [full_name.trim(), email.toLowerCase().trim(), password_hash]
-        );
+        const newUserDoc = await User.create({
+            full_name: full_name.trim(),
+            email: cleanEmail,
+            password_hash
+        });
 
         const newUser = {
-            id: result.insertId,
-            full_name: full_name.trim(),
-            email: email.toLowerCase().trim()
+            id: newUserDoc.id,
+            full_name: newUserDoc.full_name,
+            email: newUserDoc.email
         };
 
         const token = generateToken(newUser);
@@ -78,13 +82,13 @@ exports.login = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'Please provide email and password.' });
         }
 
+        const cleanEmail = email.toLowerCase().trim();
+
         // Fetch user by email
-        const users = await db.query('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
-        if (users.length === 0) {
+        const user = await User.findOne({ email: cleanEmail });
+        if (!user) {
             return res.status(401).json({ success: false, message: 'Invalid email or password.' });
         }
-
-        const user = users[0];
 
         // Compare password
         const isMatch = await bcrypt.compare(password, user.password_hash);
@@ -114,18 +118,20 @@ exports.login = async (req, res, next) => {
 // GET /api/auth/me
 exports.getMe = async (req, res, next) => {
     try {
-        const users = await db.query(
-            'SELECT id, full_name, email, created_at FROM users WHERE id = ?',
-            [req.user.id]
-        );
+        const user = await User.findById(req.user.id).select('full_name email created_at');
 
-        if (users.length === 0) {
+        if (!user) {
             return res.status(404).json({ success: false, message: 'User not found.' });
         }
 
         return res.json({
             success: true,
-            user: users[0]
+            user: {
+                id: user.id,
+                full_name: user.full_name,
+                email: user.email,
+                created_at: user.created_at
+            }
         });
     } catch (error) {
         next(error);
