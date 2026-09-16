@@ -1,16 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Users, 
-  Plus, 
-  UserPlus, 
-  Copy, 
-  Check, 
-  DollarSign, 
-  PieChart as PieIcon, 
-  FileText, 
-  ArrowRight, 
-  Trash2, 
-  AlertCircle, 
+import {
+  Users,
+  Plus,
+  UserPlus,
+  Copy,
+  Check,
+  DollarSign,
+  PieChart as PieIcon,
+  FileText,
+  ArrowRight,
+  Trash2,
+  AlertCircle,
   Bell,
   Split,
   Calendar,
@@ -21,13 +21,13 @@ import {
   TrendingUp,
   TrendingDown
 } from 'lucide-react';
-import { 
-  ResponsiveContainer, 
-  PieChart, 
-  Pie, 
-  Cell, 
-  Tooltip, 
-  Legend 
+import {
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  Legend
 } from 'recharts';
 
 import { roomService } from '../services/roomService';
@@ -47,7 +47,7 @@ export const Roommates = () => {
   const [selectedRoomId, setSelectedRoomId] = useState('');
   const [roomDetails, setRoomDetails] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard', 'expenses', 'balances', 'budgets', 'members'
-  
+
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState({ message: '', type: 'success' });
   const [copiedCode, setCopiedCode] = useState(false);
@@ -72,7 +72,7 @@ export const Roommates = () => {
   // Form States
   const [newRoomName, setNewRoomName] = useState('');
   const [joinCode, setJoinCode] = useState('');
-  
+
   // Add Shared Expense Form
   const [expTitle, setExpTitle] = useState('');
   const [expAmount, setExpAmount] = useState('');
@@ -469,11 +469,10 @@ export const Roommates = () => {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2 rounded-xl whitespace-nowrap transition-all ${
-                  activeTab === tab.id
-                    ? 'bg-brand-500 text-white shadow-md'
-                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-                }`}
+                className={`px-4 py-2 rounded-xl whitespace-nowrap transition-all ${activeTab === tab.id
+                  ? 'bg-brand-500 text-white shadow-md'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
               >
                 {tab.name}
               </button>
@@ -537,7 +536,7 @@ export const Roommates = () => {
                               <Cell key={`cell-${index}`} fill={DEFAULT_COLORS[index % DEFAULT_COLORS.length]} />
                             ))}
                           </Pie>
-                          <Tooltip 
+                          <Tooltip
                             contentStyle={{ backgroundColor: '#0f172a', borderRadius: '12px', border: '1px solid #1e293b', color: '#fff' }}
                             formatter={(val) => [`₹${Number(val).toLocaleString('en-IN')}`, 'Amount']}
                           />
@@ -674,9 +673,8 @@ export const Roommates = () => {
                         </div>
                       </div>
 
-                      <span className={`text-sm font-extrabold px-3 py-1 rounded-full ${
-                        mb.netBalance >= 0 ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
-                      }`}>
+                      <span className={`text-sm font-extrabold px-3 py-1 rounded-full ${mb.netBalance >= 0 ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
+                        }`}>
                         {mb.netBalance >= 0 ? `Gets ₹${mb.netBalance}` : `Owes ₹${Math.abs(mb.netBalance)}`}
                       </span>
                     </div>
@@ -719,8 +717,8 @@ export const Roommates = () => {
                         <span>₹{sb.spent.toLocaleString('en-IN')} / ₹{sb.amount.toLocaleString('en-IN')}</span>
                       </div>
                       <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden">
-                        <div 
-                          className={`h-full rounded-full ${sb.isExceeded ? 'bg-rose-500' : sb.isWarning ? 'bg-amber-500' : 'bg-brand-500'}`} 
+                        <div
+                          className={`h-full rounded-full ${sb.isExceeded ? 'bg-rose-500' : sb.isWarning ? 'bg-amber-500' : 'bg-brand-500'}`}
                           style={{ width: `${sb.percentageUsed}%` }}
                         />
                       </div>
