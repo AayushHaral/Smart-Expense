@@ -35,7 +35,8 @@ export const Login = () => {
         setError(res.message || 'Login failed.');
       }
     } catch (err) {
-      const errorMessage = err.response?.data?.message || (err.response ? 'Invalid email or password.' : 'Cannot connect to backend server. Please configure VITE_API_URL.');
+      console.error('Login API Error:', err);
+      const errorMessage = err.response?.data?.message || err.message || 'Invalid email or password.';
       setError(errorMessage);
     } finally {
       setLoading(false);

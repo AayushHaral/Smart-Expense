@@ -50,7 +50,8 @@ export const Register = () => {
         setError(res.message || 'Registration failed.');
       }
     } catch (err) {
-      const errorMessage = err.response?.data?.message || (err.response ? 'Failed to create account.' : 'Cannot connect to backend server. Please configure VITE_API_URL.');
+      console.error('Register API Error:', err);
+      const errorMessage = err.response?.data?.message || err.message || 'Failed to create account.';
       setError(errorMessage);
     } finally {
       setLoading(false);
