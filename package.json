@@ -1,0 +1,12 @@
+{
+  "name": "smart-expense-workspace",
+  "version": "1.0.0",
+  "description": "Smart Expense Tracker Full Stack Monorepo Workspace",
+  "private": true,
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "test": "cd backend && node test_e2e.js && node test_roommates_e2e.js"
+  }
+}

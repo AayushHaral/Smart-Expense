@@ -2,7 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
 
 const db = require('./config/db');
 const { errorHandler } = require('./middleware/errorMiddleware');
@@ -57,6 +58,15 @@ app.get('/api/health', (req, res) => {
 // Centralized Error Handling Middleware
 app.use(errorHandler);
 
+// Process safety handlers to prevent process crashes
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[Smart Expense Server] Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('[Smart Expense Server] Uncaught Exception:', err.message || err);
+});
+
 // Start server after DB initialization promise settles
 db.initPromise.then(() => {
     app.listen(PORT, () => {
@@ -68,3 +78,4 @@ db.initPromise.then(() => {
         console.log(`[Smart Expense Server] Running on http://localhost:${PORT}`);
     });
 });
+

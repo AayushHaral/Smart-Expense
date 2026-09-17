@@ -1,9 +1,18 @@
 import axios from 'axios';
 
-let rawBaseURL = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').trim().replace(/\/+$/, '');
+let rawBaseURL = import.meta.env.VITE_API_URL;
+if (!rawBaseURL || rawBaseURL.trim() === '') {
+  if (import.meta.env.PROD) {
+    rawBaseURL = '/api';
+  } else {
+    rawBaseURL = 'http://localhost:5000/api';
+  }
+}
+rawBaseURL = rawBaseURL.trim().replace(/\/+$/, '');
 if (!rawBaseURL.endsWith('/api')) {
   rawBaseURL += '/api';
 }
+
 
 const API = axios.create({
   baseURL: rawBaseURL,
@@ -24,7 +33,7 @@ API.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor to handle authorization failures
+// Response interceptor to handle authorization and network failures
 API.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -36,9 +45,12 @@ API.interceptors.response.use(
         localStorage.removeItem('user');
         window.location.href = '/login?expired=1';
       }
+    } else if (!error.response || error.code === 'ERR_NETWORK' || error.message === 'Network Error') {
+      error.message = 'Backend server unreachable. Please verify that the server is running on http://localhost:5000.';
     }
     return Promise.reject(error);
   }
 );
 
 export default API;
+
