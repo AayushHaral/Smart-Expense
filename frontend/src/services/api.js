@@ -5,14 +5,15 @@ if (!rawBaseURL || rawBaseURL.trim() === '') {
   if (import.meta.env.PROD) {
     rawBaseURL = '/api';
   } else {
-    rawBaseURL = 'http://localhost:5000/api';
+    // Dynamic host resolution: allows mobile devices on same Wi-Fi network to reach host PC backend on port 5000
+    const currentHost = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
+    rawBaseURL = `http://${currentHost}:5000/api`;
   }
 }
 rawBaseURL = rawBaseURL.trim().replace(/\/+$/, '');
 if (!rawBaseURL.endsWith('/api')) {
   rawBaseURL += '/api';
 }
-
 
 const API = axios.create({
   baseURL: rawBaseURL,
@@ -46,11 +47,12 @@ API.interceptors.response.use(
         window.location.href = '/login?expired=1';
       }
     } else if (!error.response || error.code === 'ERR_NETWORK' || error.message === 'Network Error') {
-      error.message = 'Backend server unreachable. Please verify that the server is running on http://localhost:5000.';
+      error.message = 'Backend server unreachable. Please verify that your backend server is running and accessible.';
     }
     return Promise.reject(error);
   }
 );
+
 
 export default API;
 
