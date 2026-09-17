@@ -139,3 +139,37 @@ exports.getMe = async (req, res, next) => {
         next(error);
     }
 };
+
+// POST /api/auth/reset-password
+exports.resetPassword = async (req, res, next) => {
+    try {
+        const { email, new_password } = req.body;
+
+        if (!email || !new_password) {
+            return res.status(400).json({ success: false, message: 'Please provide email and new password.' });
+        }
+
+        if (new_password.length < 6) {
+            return res.status(400).json({ success: false, message: 'New password must be at least 6 characters long.' });
+        }
+
+        const cleanEmail = email.toLowerCase().trim();
+        const user = await User.findOne({ email: cleanEmail });
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'No account found with this email address.' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        user.password_hash = await bcrypt.hash(new_password.trim(), salt);
+        await user.save();
+
+        return res.json({
+            success: true,
+            message: 'Password reset successfully. You can now log in with your new password.'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
